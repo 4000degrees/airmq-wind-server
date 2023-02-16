@@ -1,0 +1,30 @@
+{
+  "name": "airmq-wind-server",
+  "private": true,
+  "version": "0.0.0",
+  "main": "server.js",
+  "scripts": {
+    "lint": "npx eslint . --ext .js --fix --ignore-path .gitignore",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "moment": "^2.29.3"
+  },
+  "devDependencies": {
+    "eslint": "^8.13.0",
+    "eslint-config-prettier": "^8.5.0",
+    "eslint-plugin-prettier": "^4.0.0",
+    "prettier": "^2.8.4"
+  },
+  "eslintConfig": {
+    "root": true,
+    "env": {
+      "node": true,
+      "es2022": true
+    },
+    "extends": [
+      "eslint:recommended",
+      "plugin:prettier/recommended"
+    ]
+  }
+}
