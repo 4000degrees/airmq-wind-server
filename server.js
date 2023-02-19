@@ -2,8 +2,7 @@ const fs = require("fs");
 const { exec } = require("child_process");
 const moment = require("moment");
 const https = require("https");
-const http = require("http");
-const url = require("url");
+const express = require("express");
 
 /* 
 Fetches GFS 1.00 Degree data from nomads.ncep.noaa.gov and converts it to JSON.
@@ -28,17 +27,6 @@ function log(text) {
   fs.appendFile("log.txt", `${entry}\n`, (error) => {
     if (error) console.error(error);
   });
-}
-
-/**
- * GFS data is published every 6 hours and and stored in 00 06 12 18 subdirectories.
- * This function returns last interval hour from any provided hour.
- * @param {String|Number} hours
- * @returns {('00'|'06'|'12'|'18')}
- */
-function getClosestInterval(hours) {
-  const result = Math.floor(hours / 6) * 6;
-  return result < 10 ? `0${result.toString()}` : result;
 }
 
 /**
@@ -96,6 +84,7 @@ function convertGribToJson(gribFilePath, jsonFilePath) {
 function getGribData(date, hour) {
   const timestamp = date + hour;
   const gribFilePath = getGribFilePath(timestamp);
+
   log(`Fetching grib data for ${timestamp}.`);
   const query = {
     file: `gfs.t${hour}z.pgrb2.1p00.f000`,
@@ -111,6 +100,7 @@ function getGribData(date, hour) {
     dir: `/gfs.${date}/${hour}/atmos`,
   };
   const queryString = new URLSearchParams(query).toString();
+
   const promise = new Promise((resolve, reject) => {
     https
       .get(`${GFS_FILTER_URL}?${queryString}`, (response) => {
@@ -118,9 +108,11 @@ function getGribData(date, hour) {
           log(`Data for ${timestamp} does ont exist on the server.`);
         } else if (response.statusCode === 200) {
           const data = [];
+
           response.on("data", (chunk) => {
             data.push(chunk);
           });
+
           response.on("end", () => {
             log(`Data for ${timestamp} has been fetched.`);
             const buffer = Buffer.concat(data);
@@ -141,36 +133,45 @@ function getGribData(date, hour) {
 }
 
 /**
+ * GFS data is published every 6 hours and and stored in 00 06 12 18 subdirectories.
+ * This function returns last interval hour from any provided hour.
+ * @param {String|Number} hours
+ * @returns {('00'|'06'|'12'|'18')}
+ */
+function getClosestInterval(hours) {
+  const result = Math.floor(hours / 6) * 6;
+  return String(result).padStart(2, "0");
+}
+
+/**
  * Approximate GFS data publishing time according to actual publishing time on
  * https://www.nco.ncep.noaa.gov/pmb/nwprod/prodstat/index.html
  * and https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/.
  * The data is published at least 3h 40m later than cycle time.
  */
-const APPROX_PUBLISH_DELAY_HOURS = 3.7;
+const APPROX_PUBLISH_DELAY_MS = 13320000; // 3.7 hours
 
 /**
  * Returns nearest time relative to provided time when GFS data should be already published.
- * @param {String} timestamp - ISO 8601
+ * @param {String} isoTimestamp - ISO 8601
  * @returns {Object}
  */
-function getNearestPublishedTime(timestamp) {
-  const publishDelay = moment.duration(APPROX_PUBLISH_DELAY_HOURS, "h");
-  const time = moment(timestamp).utc();
+function getNearestPublishedTime(isoTimestamp) {
+  const time = moment(isoTimestamp).utc();
   const nearestCycle = getClosestInterval(time.hour());
-  const nearestCyclePublishTime = moment(timestamp)
-    .utc()
-    .set("minutes", publishDelay.minutes())
-    .set("hour", parseInt(nearestCycle, 10) + publishDelay.hours());
-  if (nearestCyclePublishTime > time) {
-    nearestCyclePublishTime.subtract(6, "hours");
+  const nearestTime = moment(time).set({
+    hours: parseInt(nearestCycle),
+    minutes: 0,
+    seconds: 0,
+    milliseconds: 0,
+  });
+  if (moment() - nearestTime < APPROX_PUBLISH_DELAY_MS) {
+    nearestTime.subtract(6, "hours");
   }
-  const hour = getClosestInterval(nearestCyclePublishTime.hours());
-  const date = nearestCyclePublishTime.format("YYYYMMDD");
   return {
-    hour,
-    date,
-    moment: nearestCyclePublishTime,
-    timestamp: date + hour,
+    hour: nearestTime.format("HH"),
+    date: nearestTime.format("YYYYMMDD"),
+    timestamp: nearestTime.format("YYYYMMDDHH"),
   };
 }
 
@@ -192,25 +193,25 @@ function deleteOlderData() {
 }
 
 /**
- * Checks for the latest available data relative to provided time locally and fetches if needed.
+ * Checks for the latest available data relative to the provided time locally and fetches if needed.
  */
 function maybeFetchGribData(time = moment.utc()) {
   const nearestPublishedTime = getNearestPublishedTime(time);
   const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
   const gribFilePath = getGribFilePath(nearestPublishedTime.timestamp);
   log(
-    `Target time: ${time.format()}. Nearest published time: ${nearestPublishedTime.moment.format()}`
+    `Target time: ${time.format()}. Nearest published time: ${
+      nearestPublishedTime.timestamp
+    }`
   );
   if (fs.existsSync(jsonFilePath)) {
     log(
-      `Data for ${nearestPublishedTime.moment.format()} exists. No need to fetch new data.`
+      `Data for ${nearestPublishedTime.timestamp} exists. No need to fetch new data.`
     );
     return;
   }
 
-  log(
-    `New data for ${nearestPublishedTime.moment.format()} due to be fetched.`
-  );
+  log(`New data for ${nearestPublishedTime.timestamp} due to be fetched.`);
   if (fs.existsSync(gribFilePath)) {
     convertGribToJson(gribFilePath, jsonFilePath);
   } else {
@@ -222,56 +223,92 @@ function maybeFetchGribData(time = moment.utc()) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  const queryObject = url.parse(req.url, true).query;
-  res.writeHead(200, { "Content-Type": "application/json" });
-  if (!moment(queryObject.isoTimestamp, moment.ISO_8601).isValid()) {
-    res.end(
-      JSON.stringify({
-        message:
-          "Provide a valid isoTimestamp query parameter to get wind forecast data.",
-      })
-    );
+const app = express();
+
+app.get("/GetWindData", (req, res) => {
+  if (!moment(req.query.isoTimestamp, moment.ISO_8601).isValid()) {
+    res.status(400);
+    res.json({
+      error:
+        "Provide a valid isoTimestamp query parameter to get wind forecast data.",
+    });
     return;
   }
-
-  const nearestPublishedTime = getNearestPublishedTime(
-    queryObject.isoTimestamp
-  );
+  const nearestPublishedTime = getNearestPublishedTime(req.query.isoTimestamp);
   const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
+
   if (!fs.existsSync(jsonFilePath)) {
-    res.end(
-      JSON.stringify({ error: "There's no data for the specified time." })
-    );
+    res.status(404);
+    res.json({
+      error: "There's no data for the specified time.",
+    });
     return;
   }
-  const readStream = fs.createReadStream(jsonFilePath);
-  readStream.pipe(res);
+
+  fs.readFile(jsonFilePath, (err, data) => {
+    if (err) {
+      res.status(400);
+      res.json({
+        error: "Internal error.",
+      });
+      return;
+    }
+    res.json({
+      data: JSON.parse(data),
+      timestamp: nearestPublishedTime.timestamp,
+    });
+  });
 });
 
-// Create data directories and log file
-if (!fs.existsSync(GRIB_DATA_DIR)) {
-  fs.mkdirSync(GRIB_DATA_DIR);
-}
+app.get("/GetTimestamp", (req, res) => {
+  if (!moment(req.query.isoTimestamp, moment.ISO_8601).isValid()) {
+    res.status(400);
+    res.json({
+      message:
+        "Provide a valid isoTimestamp query parameter to get nearest available data timestamp.",
+    });
+    return;
+  }
 
-if (!fs.existsSync(JSON_DATA_DIR)) {
-  fs.mkdirSync(JSON_DATA_DIR);
-}
+  const nearestPublishedTime = getNearestPublishedTime(req.query.isoTimestamp);
+  const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
 
-fs.writeFile(LOG_FILE, "", { flag: "wx" }, () => {});
+  if (!fs.existsSync(jsonFilePath)) {
+    res.status(404);
+    res.json({ error: "There's no data for the specified time." });
+    return;
+  }
 
-// Perform initial data fetch for last 5 data cycles
-getIncrementalArray().forEach((hours) =>
-  maybeFetchGribData(moment.utc().subtract(hours, "hours"))
-);
-
-// Check for new data periodically
-const TEN_MINUTES = 600000;
-setInterval(() => {
-  maybeFetchGribData();
-  deleteOlderData();
-}, TEN_MINUTES);
-
-server.listen(SERVER_PORT, () => {
-  log(`Server started on port ${SERVER_PORT}`);
+  res.json({ timestamp: nearestPublishedTime.timestamp });
 });
+
+function init() {
+  // Create data directories and log file
+  if (!fs.existsSync(GRIB_DATA_DIR)) {
+    fs.mkdirSync(GRIB_DATA_DIR);
+  }
+
+  if (!fs.existsSync(JSON_DATA_DIR)) {
+    fs.mkdirSync(JSON_DATA_DIR);
+  }
+
+  fs.writeFile(LOG_FILE, "", { flag: "wx" }, () => {});
+
+  // Perform initial data fetch for last 5 data cycles
+  getIncrementalArray().forEach((hours) =>
+    maybeFetchGribData(moment.utc().subtract(hours, "hours"))
+  );
+
+  // Check for new data periodically
+  const TEN_MINUTES = 600000;
+  setInterval(() => {
+    maybeFetchGribData();
+    deleteOlderData();
+  }, TEN_MINUTES);
+
+  app.listen(SERVER_PORT, () => {
+    log(`Server started on port ${SERVER_PORT}`);
+  });
+}
+
+init();
