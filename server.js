@@ -152,11 +152,11 @@ function getClosestInterval(hours) {
 const APPROX_PUBLISH_DELAY_MS = 13320000; // 3.7 hours
 
 /**
- * Returns nearest time relative to provided time when GFS data should be already published.
+ * Returns nearest dataset cycle relative to provided time when GFS data should be already published.
  * @param {String} isoTimestamp - ISO 8601
  * @returns {Object}
  */
-function getNearestPublishedTime(isoTimestamp) {
+function getNearestPublishedCycle(isoTimestamp) {
   const time = moment(isoTimestamp).utc();
   const nearestCycle = getClosestInterval(time.hour());
   const nearestTime = moment(time).set({
@@ -171,7 +171,7 @@ function getNearestPublishedTime(isoTimestamp) {
   return {
     hour: nearestTime.format("HH"),
     date: nearestTime.format("YYYYMMDD"),
-    timestamp: nearestTime.format("YYYYMMDDHH"),
+    cycle: nearestTime.format("YYYYMMDDHH"),
   };
 }
 
@@ -181,7 +181,7 @@ function getNearestPublishedTime(isoTimestamp) {
 function deleteOlderData() {
   const lastDataCyclesFiles = getIncrementalArray().map((hours) =>
     getJsonFilePath(
-      getNearestPublishedTime(moment.utc().subtract(hours, "hours")).timestamp
+      getNearestPublishedCycle(moment.utc().subtract(hours, "hours")).cycle
     )
   );
   fs.readdirSync(JSON_DATA_DIR).forEach((item) => {
@@ -196,26 +196,26 @@ function deleteOlderData() {
  * Checks for the latest available data relative to the provided time locally and fetches if needed.
  */
 function maybeFetchGribData(time = moment.utc()) {
-  const nearestPublishedTime = getNearestPublishedTime(time);
-  const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
-  const gribFilePath = getGribFilePath(nearestPublishedTime.timestamp);
+  const nearestPublishedCycle = getNearestPublishedCycle(time);
+  const jsonFilePath = getJsonFilePath(nearestPublishedCycle.cycle);
+  const gribFilePath = getGribFilePath(nearestPublishedCycle.cycle);
   log(
-    `Target time: ${time.format()}. Nearest published time: ${
-      nearestPublishedTime.timestamp
+    `Target time: ${time.format()}. Nearest published cycle: ${
+      nearestPublishedCycle.cycle
     }`
   );
   if (fs.existsSync(jsonFilePath)) {
     log(
-      `Data for ${nearestPublishedTime.timestamp} exists. No need to fetch new data.`
+      `Data for ${nearestPublishedCycle.cycle} exists. No need to fetch new data.`
     );
     return;
   }
 
-  log(`New data for ${nearestPublishedTime.timestamp} due to be fetched.`);
+  log(`New data for ${nearestPublishedCycle.cycle} is due to be fetched.`);
   if (fs.existsSync(gribFilePath)) {
     convertGribToJson(gribFilePath, jsonFilePath);
   } else {
-    getGribData(nearestPublishedTime.date, nearestPublishedTime.hour)
+    getGribData(nearestPublishedCycle.date, nearestPublishedCycle.hour)
       .then(() => {
         convertGribToJson(gribFilePath, jsonFilePath);
       })
@@ -234,8 +234,10 @@ app.get("/wind-by-timestamp", (req, res) => {
     });
     return;
   }
-  const nearestPublishedTime = getNearestPublishedTime(req.query.isoTimestamp);
-  const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
+  const nearestPublishedCycle = getNearestPublishedCycle(
+    req.query.isoTimestamp
+  );
+  const jsonFilePath = getJsonFilePath(nearestPublishedCycle.cycle);
 
   if (!fs.existsSync(jsonFilePath)) {
     res.status(404);
@@ -255,7 +257,7 @@ app.get("/wind-by-timestamp", (req, res) => {
     }
     res.json({
       data: JSON.parse(data),
-      timestamp: nearestPublishedTime.timestamp,
+      cycle: nearestPublishedCycle.cycle,
     });
   });
 });
@@ -290,12 +292,12 @@ app.get("/wind-by-cycle", (req, res) => {
     }
     res.json({
       data: JSON.parse(data),
-      timestamp: req.query.cycle,
+      cycle: req.query.cycle,
     });
   });
 });
 
-app.get("/closest-cycle", (req, res) => {
+app.get("/nearest-cycle", (req, res) => {
   if (!moment(req.query.isoTimestamp, moment.ISO_8601).isValid()) {
     res.status(400);
     res.json({
@@ -305,8 +307,10 @@ app.get("/closest-cycle", (req, res) => {
     return;
   }
 
-  const nearestPublishedTime = getNearestPublishedTime(req.query.isoTimestamp);
-  const jsonFilePath = getJsonFilePath(nearestPublishedTime.timestamp);
+  const nearestPublishedCycle = getNearestPublishedCycle(
+    req.query.isoTimestamp
+  );
+  const jsonFilePath = getJsonFilePath(nearestPublishedCycle.cycle);
 
   if (!fs.existsSync(jsonFilePath)) {
     res.status(404);
@@ -314,7 +318,7 @@ app.get("/closest-cycle", (req, res) => {
     return;
   }
 
-  res.json({ timestamp: nearestPublishedTime.timestamp });
+  res.json({ cycle: nearestPublishedCycle.cycle });
 });
 
 function init() {
