@@ -225,7 +225,7 @@ function maybeFetchGribData(time = moment.utc()) {
 
 const app = express();
 
-app.get("/GetWindData", (req, res) => {
+app.get("/wind-by-timestamp", (req, res) => {
   if (!moment(req.query.isoTimestamp, moment.ISO_8601).isValid()) {
     res.status(400);
     res.json({
@@ -247,7 +247,7 @@ app.get("/GetWindData", (req, res) => {
 
   fs.readFile(jsonFilePath, (err, data) => {
     if (err) {
-      res.status(400);
+      res.status(500);
       res.json({
         error: "Internal error.",
       });
@@ -260,7 +260,42 @@ app.get("/GetWindData", (req, res) => {
   });
 });
 
-app.get("/GetTimestamp", (req, res) => {
+app.get("/wind-by-cycle", (req, res) => {
+  if (!moment.utc(req.query.cycle, "YYYYMMDDHH", true).isValid()) {
+    res.status(400);
+    res.json({
+      error:
+        "Provide a valid cycle query parameter in the YYYYMMDDHH format to get wind forecast data.",
+    });
+    return;
+  }
+
+  const jsonFilePath = getJsonFilePath(req.query.cycle);
+
+  if (!fs.existsSync(jsonFilePath)) {
+    res.status(404);
+    res.json({
+      error: "There's no data for the specified time.",
+    });
+    return;
+  }
+
+  fs.readFile(jsonFilePath, (err, data) => {
+    if (err) {
+      res.status(500);
+      res.json({
+        error: "Internal error.",
+      });
+      return;
+    }
+    res.json({
+      data: JSON.parse(data),
+      timestamp: req.query.cycle,
+    });
+  });
+});
+
+app.get("/closest-cycle", (req, res) => {
   if (!moment(req.query.isoTimestamp, moment.ISO_8601).isValid()) {
     res.status(400);
     res.json({
